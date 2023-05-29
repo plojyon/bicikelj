@@ -1,11 +1,11 @@
-print("Importing your stupid garbage")
 import os
 import pickle
 import numpy as np
 import pandas as pd
 import sklearn.linear_model
-import random
 from tqdm import tqdm
+
+EVALUATION_MODE = False  # measure accuracy, do not generate output file
 
 def add_weather(data, weather_data):
     """Merge weather data into the train and test data."""
@@ -129,12 +129,8 @@ splits = pickle.load(open("data/splits.pkl", "rb"))
 
 def prepare_data(data, train_data, column):
     """Construct features from data."""
-    total_space = meta_data.loc[column, "total_space"]
+    # total_space = meta_data.loc[column, "total_space"]
     X = np.stack([
-        # data.join(train_data.set_index("timestamp"), on="timestamp", how="left", rsuffix="aaaaa")[column + "_1h_ago"].values,
-        # data.join(train_data.set_index("timestamp"), on="timestamp", how="left", rsuffix="aaaaa")[column + "_2h_ago"].values,
-        # count_h_ago(data, train_data, 1, column),
-        # count_h_ago(data, train_data, 2, column),
         # [total_space for _ in range(len(data))],
         data[column + "_1h_ago"].values,
         # data[column + "_1h_ago"].values == 0,
@@ -143,9 +139,8 @@ def prepare_data(data, train_data, column):
         data[column + "_2h_ago"].values < data[column + "_1h_ago"].values,
         data[column + "_3h_ago"].values < data[column + "_2h_ago"].values,
         # data.join(train_data.set_index("timestamp"), on="timestamp", how="left", rsuffix="aaaaa")[column + "_3h_ago"].values,
-        # hour,
         data["timestamp"].dt.month.values + 1 < 9,  # pocitnice
-        # data["timestamp"].dt.month.values,
+        data["timestamp"].dt.month.values,
         data["timestamp"].dt.weekday.isin([5, 6]),  # vikend
         data["timestamp"].dt.weekday.isin([0, 1, 2, 3, 4]),  # delovnik
 
@@ -163,24 +158,28 @@ def prepare_data(data, train_data, column):
         data["rain"].values == 0,
         data["rain"].values > 0.3,
         data["rain"].values > 1,
+
+        data["timestamp"].dt.hour.values + data["timestamp"].dt.minute.values / 60,
+        data["timestamp"].dt.month.values * 30 + data["timestamp"].dt.day.values,
+
     ], axis=1)
 
     y = data[column].values
 
     # center X
-    # X = X - X.mean()
+    # X = (X - X.mean()) / X.std()
 
     return X, y
 
 def train_predict(train_data, test_data, column):
-    clf = sklearn.linear_model.LinearRegression()
+    clf = sklearn.linear_model.Ridge() # sklearn.linear_model.LinearRegression()
 
     X_train, y_train = prepare_data(train_data, train_data, column)
     X_test, y_test = prepare_data(test_data, train_data, column)
 
     n_poly = 2
-    poly_features_train = sklearn.preprocessing.PolynomialFeatures(n_poly, interaction_only=True).fit_transform(X_train, y_train)
-    poly_features_test = sklearn.preprocessing.PolynomialFeatures(n_poly, interaction_only=True).fit_transform(X_test)
+    poly_features_train = sklearn.preprocessing.PolynomialFeatures(n_poly).fit_transform(X_train, y_train)
+    poly_features_test = sklearn.preprocessing.PolynomialFeatures(n_poly).fit_transform(X_test)
 
     clf.fit(poly_features_train, y_train)
     predictions = clf.predict(poly_features_test)
@@ -188,10 +187,9 @@ def train_predict(train_data, test_data, column):
 
 
 # train model
-for column in [test_data.columns[1]]:
-    print(f"Predicting column {column}")
-    # for column in tqdm(meta_data.index):
-    if True:
+for column in tqdm(meta_data.index):
+    if EVALUATION_MODE:
+        print(f"Predicting column {column}")
         batches = to_batches(train_data, splits)
 
         # eval data is zero and one hour before end of every batch
@@ -212,6 +210,7 @@ for column in [test_data.columns[1]]:
 
         predictions = train_predict(train_data, eval_data, column)
         print("MAE:", np.mean(np.abs(predictions - eval_data[column].values)))
+        exit(0)
     else:
         predictions = train_predict(train_data, test_data, column)
         predictions[predictions < 0] = 0

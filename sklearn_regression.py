@@ -41,7 +41,8 @@ def count_h_ago(data, train_data, hours, column=None):
             for ts in data["timestamp"] - pd.Timedelta(hours=hours)
         ])
 
-
+meta_data = pd.read_csv("data/bicikelj_metadata.csv", sep="\t")
+meta_data = meta_data.set_index("postaja")
 if not (
     os.path.exists("data/train_data_preprocessed.pkl") and
     os.path.exists("data/test_data_preprocessed.pkl") and
@@ -64,8 +65,6 @@ if not (
         pd.to_datetime(ts).tz_localize(None)
         for ts in weather_data["timestamp"].values
     ]
-    meta_data = pd.read_csv("data/bicikelj_metadata.csv", sep="\t")
-    meta_data = meta_data.set_index("postaja")
 
     # add 1h ago, 2h ago and 3h ago columns
     h_ago1 = pd.DataFrame(count_h_ago(train_data, train_data, 1))
@@ -124,33 +123,53 @@ train_data = pickle.load(open("data/train_data_preprocessed.pkl", "rb"))
 test_data = pickle.load(open("data/test_data_preprocessed.pkl", "rb"))
 splits = pickle.load(open("data/splits.pkl", "rb"))
 
+
+
+
+
 def prepare_data(data, train_data, column):
     """Construct features from data."""
-    hour = data["timestamp"].dt.hour.values + data["timestamp"].dt.minute.values / 60
+    total_space = meta_data.loc[column, "total_space"]
     X = np.stack([
         # data.join(train_data.set_index("timestamp"), on="timestamp", how="left", rsuffix="aaaaa")[column + "_1h_ago"].values,
         # data.join(train_data.set_index("timestamp"), on="timestamp", how="left", rsuffix="aaaaa")[column + "_2h_ago"].values,
         # count_h_ago(data, train_data, 1, column),
         # count_h_ago(data, train_data, 2, column),
+        # [total_space for _ in range(len(data))],
         data[column + "_1h_ago"].values,
+        # data[column + "_1h_ago"].values == 0,
+        # data[column + "_1h_ago"].values == total_space,
         data[column + "_2h_ago"].values,
-        # data[column + "_3h_ago"].values,
+        data[column + "_2h_ago"].values < data[column + "_1h_ago"].values,
+        data[column + "_3h_ago"].values < data[column + "_2h_ago"].values,
         # data.join(train_data.set_index("timestamp"), on="timestamp", how="left", rsuffix="aaaaa")[column + "_3h_ago"].values,
-        hour,
-        # data["timestamp"].dt.month.values + 1 < 9,  # pocitnice
-        data["timestamp"].dt.month.values,
-        data["timestamp"].dt.weekday.values,
+        # hour,
+        data["timestamp"].dt.month.values + 1 < 9,  # pocitnice
+        # data["timestamp"].dt.month.values,
+        data["timestamp"].dt.weekday.isin([5, 6]),  # vikend
+        data["timestamp"].dt.weekday.isin([0, 1, 2, 3, 4]),  # delovnik
+
+        data["timestamp"].dt.hour.isin([0, 1, 2, 3, 4, 5]), # noc
+        data["timestamp"].dt.hour.isin([6, 7, 8, 9, 10, 11]), # dopoldne
+        data["timestamp"].dt.hour.isin([12, 13, 14, 15, 16, 17]), # popoldne
+        data["timestamp"].dt.hour.isin([18, 19, 20, 21, 22, 23]), # vecer
         # np.logical_and(6 < hour, hour < 17),
         # np.logical_and(10 < hour, hour < 15),
-        # data["temperature"].values > 25,
-        # data["temperature"].values
-        # data["temperature"].values < 12,
+        data["temperature"].values > 30,
+        # data["temperature"].values,
+        data["temperature"].values < 10,
         # data["humidity"].values,
         data["rain"].values,
+        data["rain"].values == 0,
+        data["rain"].values > 0.3,
+        data["rain"].values > 1,
     ], axis=1)
 
     y = data[column].values
-    # X /= np.max(X, axis=0)
+
+    # center X
+    # X = X - X.mean()
+
     return X, y
 
 def train_predict(train_data, test_data, column):
@@ -159,9 +178,9 @@ def train_predict(train_data, test_data, column):
     X_train, y_train = prepare_data(train_data, train_data, column)
     X_test, y_test = prepare_data(test_data, train_data, column)
 
-    n_poly = 4
-    poly_features_train = sklearn.preprocessing.PolynomialFeatures(n_poly).fit_transform(X_train)
-    poly_features_test = sklearn.preprocessing.PolynomialFeatures(n_poly).fit_transform(X_test)
+    n_poly = 2
+    poly_features_train = sklearn.preprocessing.PolynomialFeatures(n_poly, interaction_only=True).fit_transform(X_train, y_train)
+    poly_features_test = sklearn.preprocessing.PolynomialFeatures(n_poly, interaction_only=True).fit_transform(X_test)
 
     clf.fit(poly_features_train, y_train)
     predictions = clf.predict(poly_features_test)
@@ -195,11 +214,13 @@ for column in [test_data.columns[1]]:
         print("MAE:", np.mean(np.abs(predictions - eval_data[column].values)))
     else:
         predictions = train_predict(train_data, test_data, column)
+        predictions[predictions < 0] = 0
         test_data[column] = predictions
         # print(predictions)
 
 # write predictions to file
-test_data.drop(columns=["temperature", "humidity", "rain"], inplace=True)
+columns_to_keep = ["timestamp"] + list(meta_data.index)
+test_data = test_data[columns_to_keep]
 test_data.to_csv("predictions.csv", index=False)
 print("Saved")
 
